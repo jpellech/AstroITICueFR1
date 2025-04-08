@@ -1,6 +1,6 @@
 import tdt
 
-path = "(3L)ABC8L-250321-155842"
+path = "ABC7L-250321-185740"
 print("finding epocs from", path)
 data = tdt.read_block(path)
 

@@ -125,4 +125,7 @@ for j = 1:length(folderList)
         DATAPATH);
         
     clearvars -except d folderList ext CDPATH DATAPATH myStruct j
+
+    
 end
+masterSummary(DATAPATH);
