@@ -1,8 +1,9 @@
 function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, DalignRewHE, ...
           GalignReward, DalignReward, GalignCue, DalignCue, dlocs, dprom, dwidth, glocs, gprom, gwidth, ...
-          Reward, Cue, RewHE, Aligntime, Aligntime1] = EventAlignment(data, time, GCamp_dFF, GRABDA_dFF, fs)
+          Reward, Cue, RewHE, Aligntime, Aligntime1, GalignOmission, DalignOmission, GalignPostOmissionHE, DalignPostOmissionHE] = ...
+          EventAlignment(data, time, GCamp_dFF, GRABDA_dFF, fs)
 
-    % Initialize all output variables
+    % Initialize all output variables (add new ones for omission)
     GalignD = []; DalignD = []; 
     GalignG = []; DalignG = [];
     GalignHE = []; DalignHE = [];
@@ -13,13 +14,15 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
     glocs = []; gprom = []; gwidth = [];
     Reward = []; Cue = []; RewHE = [];
     Aligntime = []; Aligntime1 = [];
+    GalignOmission = []; DalignOmission = [];
+    GalignPostOmissionHE = []; DalignPostOmissionHE = [];
 
     % Alignment parameters
     WindowinSec = 20;
     DA_thresh = 5;
     GCamp_thresh = 4;
-    PreEvent = 5;
-    PostEvent = 5;
+    PreEvent = 10;
+    PostEvent = 10;
     RewardPreEvent = 10;
     RewardPostEvent = 10;
 
@@ -31,7 +34,6 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
     Aligntime = linspace(-PreEvent, PostEvent, nPointsShort+1);
     Aligntime1 = linspace(-RewardPreEvent, RewardPostEvent, nPointsLong+1);
 
-    % ===== IMPROVED EPOCH DETECTION =====
     % List all possible epoch names that might contain our events
     possible_epochs = {'Tt_1', 'PrtB', 'PtB', 'Trial', 'Events'};
     event_epoc = '';
@@ -55,17 +57,15 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
     
     % Extract event codes with more robust checking
     epoc_data = data.epocs.(event_epoc);
-    Reward = []; Cue = []; HE = [];
+    Reward = []; Cue = []; HE = []; Omission = [];
     
     % Check for different possible event code schemes
-    if any(ismember(epoc_data.data, [4 2 8])) % Standard codes
+    if any(ismember(epoc_data.data, [4 2 8 16])) % Standard codes including omission (16)
         Reward = epoc_data.onset(epoc_data.data == 4);
         Cue = epoc_data.onset(epoc_data.data == 2);
         HE = epoc_data.onset(epoc_data.data == 8);
-    elseif any(ismember(epoc_data.data, [1 2 3])) % Alternative coding
-        Reward = epoc_data.onset(epoc_data.data == 1);
-        Cue = epoc_data.onset(epoc_data.data == 2);
-        HE = epoc_data.onset(epoc_data.data == 3);
+        Omission = epoc_data.onset(epoc_data.data == 16 | epoc_data.data == 0);
+        fprintf('Found %d omission trials (codes 0 and 16)\n', length(Omission));
     else
         warning('Unrecognized event codes in epoch %s. Data codes found: %s', ...
                 event_epoc, mat2str(unique(epoc_data.data)));
@@ -104,8 +104,71 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
         RewHE = HE(RewHEidx);
         HE(RewHEidx) = [];
     end
+    
+    % NEW: Find post-omission HE (HE that occur after omission trials)
+    if ~isempty(Omission) && ~isempty(HE)
+        PostOmissionHE = [];
+        omission_times = Omission; % Use whatever we identified as omissions
+        
+        for i = 1:length(omission_times)
+            % Find first HE after omission (within 10 seconds)
+            subsequent_he = HE(HE > omission_times(i) & HE < omission_times(i)+10);
+            if ~isempty(subsequent_he)
+                PostOmissionHE = [PostOmissionHE, subsequent_he(1)]; %#ok<AGROW>
+            end
+        end
+        
+        % Create alignment matrices for omissions and post-omission HEs
+        if ~isempty(omission_times)
+            GalignOmission = zeros(length(omission_times), nPointsLong+1);
+            DalignOmission = zeros(length(omission_times), nPointsLong+1);
+            
+            for i = 1:length(omission_times)
+                ST = find(abs(time-omission_times(i)) == min(abs(time-omission_times(i))));
+                halfWin = floor(nPointsLong/2);
+                startIdx = max(1, ST-halfWin);
+                endIdx = min(length(GCamp_dFF), ST+halfWin);
+                
+                if (endIdx-startIdx) < nPointsLong
+                    if startIdx == 1
+                        endIdx = startIdx + nPointsLong;
+                    else
+                        startIdx = endIdx - nPointsLong;
+                    end
+                end
+                
+                GalignOmission(i,:) = GCamp_dFF(startIdx:endIdx);
+                DalignOmission(i,:) = GRABDA_dFF(startIdx:endIdx);
+            end
+        end
+        
+        if ~isempty(PostOmissionHE)
+            GalignPostOmissionHE = zeros(length(PostOmissionHE), nPointsShort+1);
+            DalignPostOmissionHE = zeros(length(PostOmissionHE), nPointsShort+1);
+            
+            for i = 1:length(PostOmissionHE)
+                ST = find(abs(time-PostOmissionHE(i)) == min(abs(time-PostOmissionHE(i))));
+                halfWin = floor(nPointsShort/2);
+                startIdx = max(1, ST-halfWin);
+                endIdx = min(length(GCamp_dFF), ST+halfWin);
+                
+                if (endIdx-startIdx) < nPointsShort
+                    if startIdx == 1
+                        endIdx = startIdx + nPointsShort;
+                    else
+                        startIdx = endIdx - nPointsShort;
+                    end
+                end
+                
+                GalignPostOmissionHE(i,:) = GCamp_dFF(startIdx:endIdx);
+                DalignPostOmissionHE(i,:) = GRABDA_dFF(startIdx:endIdx);
+            end
+        end
+    else
+        fprintf('No omission trials or head entries found to analyze\n');
+    end
 
-    % === DA peak alignment ===
+    % DA peak alignment
     if ~isempty(GRABDA_dFF)
         [~, dlocs, dwidth, dprom] = findpeaks(GRABDA_dFF, 'MinPeakProminence', DA_thresh);
         
@@ -135,7 +198,7 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
         end
     end
 
-    % === GCAMP peak alignment ===
+    % GCAMP peak alignment 
     if ~isempty(GCamp_dFF)
         [~, glocs, gwidth, gprom] = findpeaks(GCamp_dFF, 'MinPeakProminence', GCamp_thresh);
         
@@ -164,7 +227,7 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
         end
     end
 
-    % === HE event alignment ===
+    % HE event alignment 
     if ~isempty(HE)
         GalignHE = zeros(length(HE), nPointsShort+1);
         DalignHE = zeros(length(HE), nPointsShort+1);
@@ -189,7 +252,7 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
         end
     end
 
-    % === rewarded HE alignment ===
+    % rewarded HE alignment
     if ~isempty(RewHE)
         GalignRewHE = zeros(length(RewHE), nPointsShort+1);
         DalignRewHE = zeros(length(RewHE), nPointsShort+1);
@@ -213,7 +276,7 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
         end
     end
 
-    % === reward alignment ===
+    % reward alignment
     if ~isempty(Reward)
         Reward(Reward < 10) = []; % Remove rewards in first 10s
         GalignReward = zeros(length(Reward), nPointsLong+1);
@@ -238,7 +301,7 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
         end
     end
 
-    % === cue alignment ===
+    % cue alignment
     if ~isempty(Cue)
         GalignCue = zeros(length(Cue), nPointsLong+1);
         DalignCue = zeros(length(Cue), nPointsLong+1);
@@ -262,13 +325,62 @@ function [GalignD, DalignD, GalignG, DalignG, GalignHE, DalignHE, GalignRewHE, D
         end
     end
     
+    % NEW: Omission trial alignment
+    if ~isempty(Omission)
+        GalignOmission = zeros(length(Omission), nPointsLong+1);
+        DalignOmission = zeros(length(Omission), nPointsLong+1);
+        
+        for i = 1:length(Omission)
+            ST = find(abs(time-Omission(i)) == min(abs(time-Omission(i))));
+            halfWin = floor(nPointsLong/2);
+            startIdx = max(1, ST-halfWin);
+            endIdx = min(length(GCamp_dFF), ST+halfWin);
+            
+            if (endIdx-startIdx) < nPointsLong
+                if startIdx == 1
+                    endIdx = startIdx + nPointsLong;
+                else
+                    startIdx = endIdx - nPointsLong;
+                end
+            end
+            
+            GalignOmission(i,:) = GCamp_dFF(startIdx:endIdx);
+            DalignOmission(i,:) = GRABDA_dFF(startIdx:endIdx);
+        end
+    end
+    
+    % NEW: Post-omission HE alignment
+    if exist('PostOmissionHE', 'var') && ~isempty(PostOmissionHE)
+        GalignPostOmissionHE = zeros(length(PostOmissionHE), nPointsShort+1);
+        DalignPostOmissionHE = zeros(length(PostOmissionHE), nPointsShort+1);
+        
+        for i = 1:length(PostOmissionHE)
+            ST = find(abs(time-PostOmissionHE(i)) == min(abs(time-PostOmissionHE(i))));
+            halfWin = floor(nPointsShort/2);
+            startIdx = max(1, ST-halfWin);
+            endIdx = min(length(GCamp_dFF), ST+halfWin);
+            
+            if (endIdx-startIdx) < nPointsShort
+                if startIdx == 1
+                    endIdx = startIdx + nPointsShort;
+                else
+                    startIdx = endIdx - nPointsShort;
+                end
+            end
+            
+            GalignPostOmissionHE(i,:) = GCamp_dFF(startIdx:endIdx);
+            DalignPostOmissionHE(i,:) = GRABDA_dFF(startIdx:endIdx);
+        end
+    end
+    
     % Debug output
     fprintf('EventAlignment Complete:\n');
     fprintf('Using event epoc: %s\n', event_epoc);
     fprintf('Time vectors: %d (short), %d (long)\n', length(Aligntime), length(Aligntime1));
     fprintf('DA peaks: %d, GCamp peaks: %d\n', length(dlocs), length(glocs));
-    fprintf('HE: %d, RewHE: %d, Reward: %d, Cue: %d\n', ...
-            size(GalignHE,1), size(GalignRewHE,1), size(GalignReward,1), size(GalignCue,1));
+    fprintf('HE: %d, RewHE: %d, Reward: %d, Cue: %d, Omission: %d, PostOmissionHE: %d\n', ...
+            size(GalignHE,1), size(GalignRewHE,1), size(GalignReward,1), ...
+            size(GalignCue,1), size(GalignOmission,1), size(GalignPostOmissionHE,1));
 end
 
 % Helper function

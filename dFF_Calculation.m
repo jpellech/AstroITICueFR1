@@ -19,8 +19,8 @@ function [GCamp_dFF, GRABDA_dFF, SlowGCamp, SlowGRABDA, FlatGCamp, FlatGRABDA] =
     FlatGCamp = GCamp_dFF - SlowGCamp;
     FlatGRABDA = GRABDA_dFF - SlowGRABDA;
     
-    % Lowpass ilter signals
-    cutoffFrequency = 2;
+    % Lowpass filter signals
+    cutoffFrequency = 10;
     order = 4;
     [b, a] = butter(order, cutoffFrequency / (fs / 2), 'low');
     
